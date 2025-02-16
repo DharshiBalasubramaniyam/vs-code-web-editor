@@ -1,26 +1,22 @@
-import { 
-	ConfigurationChangeEvent,
-	ExtensionContext, 
-	RelativePattern, 
-	Uri, 
-	commands, 
-	window, 
-	workspace 
-} from 'vscode';
-import { 
-	LanguageClientOptions, 
-	ProtocolNotificationType0, 
-	LanguageClient as WorkerLanguageClient 
-} from 'vscode-languageclient/browser';
+import * as vscode from 'vscode';
+import * as lc from 'vscode-languageclient/browser';
 
-let client: WorkerLanguageClient | undefined;
+let client: lc.LanguageClient | undefined;
+interface WorkspaceFolderPath {
+	relativePath: string,
+	absolutePath: string
+}
+const WorkspaceFoldersNotification = new lc.NotificationType<WorkspaceFolderPath[]>(
+    'workspace/folders'
+);
 
-export async function activate(context: ExtensionContext) {
-	context.subscriptions.push(commands.registerCommand('simple-web-extension.hello', () => {
-		window.showInformationMessage('Hello from simple-web-extension!');
+export async function activate(context: vscode.ExtensionContext) {
+	context.subscriptions.push(vscode.commands.registerCommand('simple-web-extension.hello', () => {
+		vscode.window.showInformationMessage('Hello from simple-web-extension!');
 	}));
-	resolveWorkspaceFolderPaths();
-
+	
+    resolveWorkspaceFolderPaths();
+	
 	client = createWorkerLanguageClient(context);
 	client.start().then(() => {
         console.log('Language client started successfully');
@@ -29,55 +25,88 @@ export async function activate(context: ExtensionContext) {
     });
 	context.subscriptions.push(client);
 
-	// workspace.onDidChangeConfiguration((e: ConfigurationChangeEvent) => {
-	// 	console.log("onDidChangeConfiguration: ", e)
-	// })
-
-	workspace.onDidChangeWorkspaceFolders(async (e) => {
+	vscode.workspace.onDidChangeWorkspaceFolders(async (e) => {
 		console.log("onDidChangeWorkspaceFolders: ", e)
 		resolveWorkspaceFolderPaths();
 	})
 
-}
-
-interface WorkspaceFolderPath {
-	relativePath: string,
-	absolutePath: string
-}
-
-function resolveWorkspaceFolderPaths() {
-	const workspaceFolders = workspace.workspaceFolders;
-	console.log("workspaceFolders: ", workspaceFolders);
-	const details: WorkspaceFolderPath[] = [];
-	workspaceFolders.forEach(async (folder) => {
-		const files: Uri[] = await workspace.findFiles(new RelativePattern(folder, 'Config.toml'), null, 1);
-		console.log("config file in folder ", folder.name, ": ", files);
-		if (files.length > 0) {
-			const fileContent = await workspace.fs.readFile(files[0]);
-			const decoder = new TextDecoder('utf-8');
-			const contentAsString = decoder.decode(fileContent);
-			const localFolderPath = parseToml(contentAsString)["localPath"];
-			console.log('Ballerina.toml Content:', contentAsString);
-			details.push({
-				relativePath: `file:///${folder.name}`,
-				absolutePath: `file:///${localFolderPath}`
-			});
-			storeDataInCache("/workspaceFolders", details);
-		} else {
-			// TODO: Handle when no config file found
+	vscode.workspace.onDidChangeTextDocument((event) => {
+		const filePath = event.document.uri.path;
+		if (filePath.endsWith('Config.toml')) {
+			console.log(`Config.toml modified: `, event.document);
+			resolveWorkspaceFolderPaths(); 
 		}
 	});
-	console.log("final workspace details: ", details);
+
 }
 
-function createWorkerLanguageClient(context: ExtensionContext): WorkerLanguageClient {
-	const serverMain = Uri.joinPath(context.extensionUri, 'server/dist/browserServerMain.js');
+async function resolveWorkspaceFolderPaths() {
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (!workspaceFolders) return;
+
+    const details = await Promise.all(
+        workspaceFolders.map(async (folder) => {
+            const files = await vscode.workspace.findFiles(new vscode.RelativePattern(folder, 'Config.toml'), null, 1);
+            if (files.length > 0) {
+                const fileContent = await vscode.workspace.fs.readFile(files[0]);
+                const contentAsString = new TextDecoder('utf-8').decode(fileContent);
+                const localFolderPath = parseToml(contentAsString)['localPath'];
+				if (localFolderPath == undefined) {
+					// TODO: when user add this property call this function
+					vscode.window.showErrorMessage("Config.toml doesn't contain localPath property in the project: ", folder.uri.fsPath)
+				}
+				vscode.window.showInformationMessage(`Config.toml file found in the project: ${folder.uri.fsPath}. Resolving path...`)
+                return {
+                    relativePath: `file:///${folder.name}`,
+                    absolutePath: `file:///${localFolderPath}`,
+                };
+            }
+			// TODO: when user creates or do any changes to this file call this function
+			vscode.window.showErrorMessage("Config.toml file not found in the project: ", folder.uri.fsPath)
+            return null; 
+        })
+    );
+
+    const validDetails = details.filter((detail) => detail !== null) as WorkspaceFolderPath[];
+    console.log('Final workspace details:', validDetails);
+
+    if (client) {
+        client.sendNotification(WorkspaceFoldersNotification, validDetails);
+    }
+
+}
+
+function setupConfigFileWatcher() {
+	console.log('Setting up file system watcher for Config.toml...');
+    const watcher = vscode.workspace.createFileSystemWatcher('**/Config.toml');
+
+    watcher.onDidCreate(() => {
+        console.log('Config.toml created, re-resolving workspace folder paths...');
+        resolveWorkspaceFolderPaths();
+    });
+
+    watcher.onDidChange(() => {
+        console.log('Config.toml updated, re-resolving workspace folder paths...');
+        // resolveWorkspaceFolderPaths();
+    });
+
+    watcher.onDidDelete(() => {
+        console.log('Config.toml deleted, re-resolving workspace folder paths...');
+        resolveWorkspaceFolderPaths();
+    });
+
+	console.log('File system watcher setup complete.');
+}
+
+
+function createWorkerLanguageClient(context: vscode.ExtensionContext): lc.LanguageClient {
+	const serverMain = vscode.Uri.joinPath(context.extensionUri, 'server/dist/browserServerMain.js');
 	const worker = new Worker(serverMain.toString(true));
 	console.log('Worker created with script:', serverMain.toString(true));
-	return new WorkerLanguageClient('ballerinalangClient', 'Ballerina Language Client', getClientOptions(), worker);
+	return new lc.LanguageClient('ballerinalangClient', 'Ballerina Language Client', getClientOptions(), worker);
 }
 
-function getClientOptions(): LanguageClientOptions {
+function getClientOptions(): lc.LanguageClientOptions {
 	return {
 		documentSelector: [
             { scheme: 'file', language: "ballerina" },
@@ -85,14 +114,14 @@ function getClientOptions(): LanguageClientOptions {
         ],
         synchronize: { configurationSection: "ballerina" },
         initializationOptions: {
-            "enableSemanticHighlighting": <string>workspace.getConfiguration().get("kolab.enableSemanticHighlighting"),
-			"enableInlayHints": <string>workspace.getConfiguration().get("kolab.enableInlayHints"),
+            "enableSemanticHighlighting": <string>vscode.workspace.getConfiguration().get("kolab.enableSemanticHighlighting"),
+			"enableInlayHints": <string>vscode.workspace.getConfiguration().get("kolab.enableInlayHints"),
 			"supportBalaScheme": "true",
 			"supportQuickPick": "true",
 			"supportPositionalRenamePopup": "true"
         },
-        outputChannel: window.createOutputChannel('Ballerina'),
-        traceOutputChannel: window.createOutputChannel('Trace'),
+        outputChannel: vscode.window.createOutputChannel('Ballerina'),
+        traceOutputChannel: vscode.window.createOutputChannel('Trace'),
 	};
 }
 
@@ -129,32 +158,7 @@ function parseToml(content: string): Record<string, any> {
     return result;
 }
 
-async function storeDataInCache(key: string, data: any) {
-	const cache = await caches.open("custom-cache");
-  
-	// Convert the key to an absolute URL
-	const url = new URL(key, self.location.origin);
-  
-	const response = new Response(JSON.stringify(data), {
-	  headers: { "Content-Type": "application/json" },
-	});
-  
-	await cache.put(url, response);
-}
-
-async function getDataFromCache(key: string): Promise<WorkspaceFolderPath[] | null> {
-    const cache = await caches.open("custom-cache");
-    const url = new URL(key, self.location.origin);
-    const response = await cache.match(url);
-
-    if (response) {
-        return response.json() as Promise<WorkspaceFolderPath[]>;
-    }
-    return null;
-}
-
 export async function deactivate(): Promise<void> {
-	// TODO: clear workspace folder details fron cache here
 	if (client) {
         await client.stop();
         client = undefined;
