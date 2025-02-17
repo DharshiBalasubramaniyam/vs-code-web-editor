@@ -52,7 +52,6 @@ async function resolveWorkspaceFolderPaths() {
                 const contentAsString = new TextDecoder('utf-8').decode(fileContent);
                 const localFolderPath = parseToml(contentAsString)['localPath'];
 				if (localFolderPath == undefined) {
-					// TODO: when user add this property call this function
 					vscode.window.showErrorMessage("Config.toml doesn't contain localPath property in the project: ", folder.uri.fsPath)
 				}
 				vscode.window.showInformationMessage(`Config.toml file found in the project: ${folder.uri.fsPath}. Resolving path...`)
@@ -61,7 +60,6 @@ async function resolveWorkspaceFolderPaths() {
                     absolutePath: `file:///${localFolderPath}`,
                 };
             }
-			// TODO: when user creates or do any changes to this file call this function
 			vscode.window.showErrorMessage("Config.toml file not found in the project: ", folder.uri.fsPath)
             return null; 
         })
@@ -75,29 +73,6 @@ async function resolveWorkspaceFolderPaths() {
     }
 
 }
-
-function setupConfigFileWatcher() {
-	console.log('Setting up file system watcher for Config.toml...');
-    const watcher = vscode.workspace.createFileSystemWatcher('**/Config.toml');
-
-    watcher.onDidCreate(() => {
-        console.log('Config.toml created, re-resolving workspace folder paths...');
-        resolveWorkspaceFolderPaths();
-    });
-
-    watcher.onDidChange(() => {
-        console.log('Config.toml updated, re-resolving workspace folder paths...');
-        // resolveWorkspaceFolderPaths();
-    });
-
-    watcher.onDidDelete(() => {
-        console.log('Config.toml deleted, re-resolving workspace folder paths...');
-        resolveWorkspaceFolderPaths();
-    });
-
-	console.log('File system watcher setup complete.');
-}
-
 
 function createWorkerLanguageClient(context: vscode.ExtensionContext): lc.LanguageClient {
 	const serverMain = vscode.Uri.joinPath(context.extensionUri, 'server/dist/browserServerMain.js');
@@ -132,25 +107,21 @@ function parseToml(content: string): Record<string, any> {
     for (const line of lines) {
         const trimmedLine = line.trim();
 
-        // Skip empty lines or comments
         if (!trimmedLine || trimmedLine.startsWith('#')) {
             continue;
         }
 
-        // Match key-value pairs (e.g., key = "value")
         const keyValueMatch = trimmedLine.match(/^([\w\-\.]+)\s*=\s*["']?([^"']+)["']?$/);
         if (keyValueMatch) {
             const key = keyValueMatch[1];
             let value: any = keyValueMatch[2];
 
-            // Convert value to boolean, number, or keep as string
             if (value === 'true' || value === 'false') {
                 value = value === 'true';
             } else if (!isNaN(Number(value))) {
                 value = Number(value);
             }
 
-            // Add the key-value pair to the result object
             result[key] = value;
         }
     }

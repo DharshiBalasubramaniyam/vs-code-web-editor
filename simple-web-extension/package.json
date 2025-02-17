@@ -10,9 +10,7 @@
     "Other"
   ],
   "activationEvents": [
-    "onLanguage:ballerina",
-    "onCommand:simple-web-extension.hello",
-    "workspaceContains:**/Ballerina.toml"
+    "*"
   ],
   "browser": "./client/dist/browserClientMain.js",
   "contributes": {
